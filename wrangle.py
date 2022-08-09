@@ -42,7 +42,7 @@ query = '''
       AND prop.longitude IS NOT NULL
       AND transactiondate <= '2017-12-31'
       AND propertylandusedesc = "Single Family Residential"
-'''
+        '''
 
 ###############
 
@@ -102,7 +102,13 @@ def tidy(df):
                     'taxamount',
                     'rawcensustractandblock',
                     'roomcnt',
-                    'regionidcounty']
+                    'regionidcounty',
+                    'propertycountylandusecode',
+                    'regionidzip',
+                    'transactiondate',
+                    'censustractandblock',
+                    'threequarterbathnbr',
+                    'assessmentyear']
     df = df.drop(columns=cols_to_drop)
     # fill null values with 0 in specified columns
     cols_to_fill_zero = ['fireplacecnt',
@@ -110,7 +116,6 @@ def tidy(df):
                          'garagetotalsqft',
                          'hashottuborspa',
                          'poolcnt',
-                         'threequarterbathnbr',
                          'taxdelinquencyflag']
     for col in cols_to_fill_zero:
         df[col] = np.where(df[col].isna(), 0, df[col]) 
@@ -124,42 +129,34 @@ def tidy(df):
     
     return df
 
+
+
 def optimize(df):
-    # changing numeric codes to strings
-    df['fips'] = df.fips.apply(lambda fips: '0' + str(int(fips)))
-    df['regionidzip'] = df.regionidzip.apply(lambda x: str(int(x)))
-    df['censustractandblock'] = df.censustractandblock.apply(lambda x: str(int(x)))
+    #Create a dictionary mapping the fips values to the counties
+    county_dict = {6037.0: 'LA County', 6059.0: 'Orange County',
+                   6111.0: 'Ventura County'}
+    #Replace the fips numbers with county names
+    df['fips'].replace(county_dict, inplace=True)
+    df.rename(columns={'fips': 'county'}, inplace=True)
     # change the 'Y' in taxdelinquencyflag to 1
-    df['bool_taxdelinquencyflag'] = np.where(df.taxdelinquencyflag == 'Y', 1, df.taxdelinquencyflag)
+    df['taxdelinquencyflag'] = np.where(df.taxdelinquencyflag == 'Y', 1, df.taxdelinquencyflag)
     # change boolean column to int
-    df['bool_hot_tub_or_spa'] = df.hashottuborspa.apply(lambda x: str(int(x)))
+    df['hot_tub_or_spa'] = df.hashottuborspa.apply(lambda x: str(int(x)))
     # changing year from float to int
     df['yearbuilt'] = df.yearbuilt.apply(lambda x: int(x))
-    df['assessment_year'] = df.assessmentyear.apply(lambda x: int(x))
     # moving the latitude and longitude decimal place
     df['latitude'] = df.latitude / 1_000_000
     df['longitude'] = df.longitude / 1_000_000
     # adding a feature: age 
     df['age'] = 2017 - df.yearbuilt
     df = df.drop(columns='yearbuilt')
-    # add a feature: has_garage
-    df['bool_has_garage'] = np.where(df.garagecarcnt > 0, 1, 0)
-    # add a feature: has_pool
-    df['bool_has_pool'] = np.where(df.poolcnt > 0, 1, 0)
-    # add a feature: has_fireplace
-    df['bool_has_fireplace'] = np.where(df.fireplacecnt > 0, 1, 0)
     # add a feature: taxvalue_per_sqft
     df['taxval_sqft'] = df.taxvaluedollarcnt / df.calculatedfinishedsquarefeet
     # rename sqft column
     df = df.rename(columns={'calculatedfinishedsquarefeet': 'sq_ft'})
-    # add a column: absolute value of logerror (derived from target)
-    df['abs_logerror'] = abs(df.logerror)
-    # add a column: direction of logerror (high or low) (derived from target)
-    df['logerror_direction'] = np.where(df.logerror < 0, 'low', 'high')
     
     
     return df
-
 
 def train_validate_test_split(df):
     '''
@@ -179,3 +176,72 @@ def train_validate_test_split(df):
     print(f'validate n = {validate.shape[0]}')
 
     return train, validate, test
+
+
+
+
+def MM_scale_zillow(train, validate, test):
+    '''
+    This takes in the train, validate, and test dataframes, as well as the target label. 
+    It then fits a scaler object to the train sample based on the given sample_type, applies that
+    scaler to the train, validate, and test samples, and appends the new scaled data to the 
+    dataframes as additional columns with the prefix 'scaled_'. 
+    train, validate, and test dataframes are returned, in that order. 
+    '''
+    target = 'logerror'
+    
+    # identify quantitative features to scale
+    quant_features = [col for col in train.columns if (train[col].dtype != 'object') 
+                                                    & (col != target)]
+    
+    # establish empty dataframes for storing scaled dataset
+    train_scaled = train.copy()
+    validate_scaled = validate.copy()
+    test_scaled = test.copy()
+    
+    # create and fit the scaler
+    scaler = MinMaxScaler().fit(train[quant_features])
+    
+    # adding scaled features to scaled dataframes
+    train_scaled[quant_features] = scaler.transform(train[quant_features])
+    validate_scaled[quant_features] = scaler.transform(validate[quant_features])
+    test_scaled[quant_features] = scaler.transform(test[quant_features])
+   
+
+    return train_scaled, validate_scaled, test_scaled
+
+def dummies(train, validate, test):
+    # Get dummies for non-binary categorical variables
+    dummy_train = pd.get_dummies(train[['cluster_BedBath',\
+                                'cluster_BedBathSqft',\
+                                'cluster_BedBathTaxvaluepersqft',\
+                                'cluster_LatLong']], dummy_na=False, \
+                              drop_first=True)
+
+    dummy_validate = pd.get_dummies(validate[['cluster_BedBath',\
+                                'cluster_BedBathSqft',\
+                                'cluster_BedBathTaxvaluepersqft',\
+                                'cluster_LatLong']], dummy_na=False, \
+                              drop_first=True)
+
+    dummy_test = pd.get_dummies(test[['cluster_BedBath',\
+                                'cluster_BedBathSqft',\
+                                'cluster_BedBathTaxvaluepersqft',\
+                                'cluster_LatLong']], dummy_na=False, \
+                              drop_first=True)
+    
+    # Concatenate dummy dataframe to original 
+    train = pd.concat([train, dummy_train], axis=1)
+    validate = pd.concat([validate, dummy_validate], axis=1)
+    test = pd.concat([test, dummy_test], axis=1)
+
+    return train, validate, test
+
+def prepare(df):
+
+    df = tidy(df)
+
+    df = optimize(df)
+
+    return df
+
